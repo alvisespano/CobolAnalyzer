@@ -1,0 +1,148 @@
+{
+
+module CobolAnalyzer.Engine.StatementLexer
+
+open System
+open Microsoft.FSharp.Text.Lexing
+open Absyn
+open StatementParser
+open Prelude
+open ParseTrans
+
+let lexeme lexbuf = LexBuffer<_>.LexemeString lexbuf
+
+let newline (lexbuf : LexBuffer<_>) =
+    lexbuf.EndPos <- lexbuf.EndPos.NextLine
+
+let keyword_token lexbuf tok = if keyword_token_mode then KEYWORD (lexeme lexbuf) else tok
+
+let invariant_keyword_token lexbuf = ResyncKeyword (INVARIANT_KEYWORD (lexeme lexbuf))
+
+}
+
+let digit = ['0'-'9']
+let whitespace = [' ' '\t']
+let whitespaces = whitespace+
+let newline = ('\000')? ('\r')? '\n'
+let nat = digit+
+let ureal = digit+ '.' digit+
+let string_quote = ['\"' '\'']
+let stars = ('*')+
+let id = ['A'-'Z' 'a'-'z']['A'-'Z' 'a'-'z' '0'-'9' '-' '_']*
+
+rule comment_token = parse
+    | newline whitespaces? '*'                  { newline lexbuf; comment_token lexbuf }
+    | newline									{ newline lexbuf; EOL }
+	| eof										{ EOF }
+    | _											{ comment_token lexbuf }
+
+and statement_token = parse
+    | newline whitespaces? '*'		            { newline lexbuf; comment_token lexbuf }
+	| newline									{ newline lexbuf; EOL }
+	| whitespaces								{ statement_token lexbuf }
+    
+	| "MOVE"									{ (ResyncKeyword MOVE) }
+	| "ADD"										{ (ResyncKeyword ADD) }
+	| "SUBTRACT"								{ (ResyncKeyword SUBTRACT) }
+	| "MULTIPLY"								{ (ResyncKeyword MULTIPLY) }
+	| "DIVIDE"									{ (ResyncKeyword DIVIDE) } 
+	| "IF"										{ (ResyncKeyword IF) }
+	| "GO TO"									{ (ResyncKeyword GOTO) }
+	| "PERFORM"									{ (ResyncKeyword PERFORM) }
+	| "COMPUTE"									{ (ResyncKeyword COMPUTE) }
+	| "SET"										{ (ResyncKeyword SET) }
+	| "EVALUATE"								{ (ResyncKeyword EVALUATE) }
+  	| "STOP" whitespaces "RUN"					{ (ResyncKeyword STOP_RUN) } 
+	| "EXIT"									{ (ResyncKeyword EXIT) } 
+    | "END-IF"                                  { (ResyncKeyword END_IF) }
+	| "WHEN"									{ (ResyncKeyword WHEN) }
+	| "END-PERFORM"								{ (ResyncKeyword END_PERFORM) }
+	| "WHEN" whitespaces "OTHER"				{ (ResyncKeyword WHEN_OTHER) }
+	| "ELSE"									{ (ResyncKeyword ELSE) }
+	| "END-EVALUATE"							{ (ResyncKeyword END_EVALUATE) }
+	| "END-MOVE"								{ (ResyncKeyword END_MOVE) }
+
+	| "DISPLAY"									{ invariant_keyword_token lexbuf }
+	| "ACCEPT"									{ invariant_keyword_token lexbuf }
+	| "OPEN"									{ invariant_keyword_token lexbuf }
+	| "CLOSE"									{ invariant_keyword_token lexbuf }
+	| "READ"									{ invariant_keyword_token lexbuf }
+	| "EXEC"									{ invariant_keyword_token lexbuf }
+	| "COPY"									{ invariant_keyword_token lexbuf }
+	| "WRITE"									{ invariant_keyword_token lexbuf }
+
+
+	| "END-EXEC"								{ END_INVARIANT }
+
+    | '.'										{ ResyncKeyword DOT }
+
+	| "THEN"									{ keyword_token lexbuf (THEN) }
+	| "TIMES"									{ keyword_token lexbuf (TIMES) }
+	| "UNTIL"									{ keyword_token lexbuf (UNTIL) }
+	| "VARYING"									{ keyword_token lexbuf (VARYING) }
+	| "TO"										{ keyword_token lexbuf (TO) }
+	| "FROM"									{ keyword_token lexbuf (FROM) }
+	| "INTO"									{ keyword_token lexbuf (INTO) }
+	| "BY"										{ keyword_token lexbuf (BY) }
+	| "GIVING"									{ keyword_token lexbuf (GIVING) }
+	| "DEPENDING" whitespaces "ON"				{ keyword_token lexbuf (DEPENDING_ON) }
+	| "THRU"									{ keyword_token lexbuf (THRU) }
+	| "THROUGH"									{ keyword_token lexbuf (THRU) }
+	| "WITH"									{ keyword_token lexbuf (WITH) }
+	| "TEST"									{ keyword_token lexbuf (TEST) }
+	| "BEFORE"									{ keyword_token lexbuf (BEFORE) }
+	| "AFTER"									{ keyword_token lexbuf (AFTER) }
+	| "INPUT"									{ keyword_token lexbuf (INPUT) }
+	| "OUTPUT"									{ keyword_token lexbuf (OUTPUT) }
+	| "NO"										{ keyword_token lexbuf (NO) }
+	| "ADVANCING"								{ keyword_token lexbuf (ADVANCING) }
+	| "ERROR"									{ keyword_token lexbuf (ERROR) }
+	| "PROCEDURE"								{ keyword_token lexbuf (PROCEDURE) }
+	| "STANDARD"								{ keyword_token lexbuf (STANDARD) }
+	| "OTHER"									{ keyword_token lexbuf (OTHER) }
+	| "ON"										{ keyword_token lexbuf (ON) }
+
+	| "OF"										{ keyword_token lexbuf OF }
+	| "IS"										{ keyword_token lexbuf IS }
+	| "TRUE"									{ TRUE }
+	| "FALSE"									{ FALSE }
+	| "TO"										{ TO }
+	| "LESS"									{ LESS }
+	| "GREATER"									{ GREATER }
+	| "EQUAL"									{ EQUAL }
+	| "THAN"									{ THAN }
+
+	| "ZERO" | "ZEROS" | "ZEROES"				{ ZEROS }
+	| "SPACE" | "SPACES"						{ SPACES }
+
+	| ','										{ COMMA }
+	| ':'										{ COLON }
+
+	| '('										{ BRA }
+	| ')'										{ KET }
+
+	| "+"										{ PLUS }
+	| "-"										{ MINUS }
+	| '*'										{ MULT }
+	| "/"										{ DIV }
+	| "%"										{ MOD }
+	| "="										{ EQ }
+	| "AND"										{ AND }
+	| "OR"										{ OR }
+	| "NOT"										{ NOT }
+	| "<"										{ LT }
+	| ">"										{ GT }
+	| "<="										{ LEQ }
+	| ">="										{ GEQ }
+	| "<>"										{ NEQ }
+		
+  	| string_quote [^'"' ''']* string_quote		{ let s = lexeme lexbuf in STRING (s.Substring (1, s.Length - 2)) }
+
+	| nat   									{ UINT64 (UInt64.Parse (lexeme lexbuf)) }
+	| ('+' | '-') nat							{ SINT64 (Int64.Parse (lexeme lexbuf)) }
+    | '-'? ureal             					{ FLOAT (parse_float (lexeme lexbuf)) }
+
+    | id										{ ID (lexeme lexbuf) }
+	| id '.' id									{ DOT_ACCESS (lexeme lexbuf) }
+
+	| eof										{ EOF }

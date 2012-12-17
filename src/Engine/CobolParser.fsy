@@ -1,0 +1,361 @@
+ 
+%{
+
+#light "on"
+
+open System
+open Absyn
+open Absyn.Cobol
+open ParseTrans
+
+let parse_error_rich = Some (fun ctx -> raise (ParseErrorContext ctx))
+
+%}
+
+%token <string> STRING PIC
+%token <Absyn.id> ID 
+%token <int64> INT64
+%token <uint64> UINT64
+%token <float> FLOAT
+%token <int> PIC_NUM
+
+%token EOF OCCURS VALUE THRU COMP COMP1 COMP2 COMP3 PACKED_DECIMAL BINARY REDEFINES USAGE
+       PERIOD COMMA DOT
+       PIC_A PIC_X PIC_9 PIC_Z PIC_0 PIC_V PIC_S PIC_DOT PIC_COMMA ZEROS SPACES
+       DIVISION SECTION IDENTIFICATION PROGRAM_ID ENVIRONMENT CONFIGURATION WORKING_STORAGE DATA SPECIAL_NAMES DECIMAL_POINT COMMA_KEYWORD NAME NAMES IS INPUT_OUTPUT MEMBER
+	   FILE_CONTROL FILE SELECT OPTIONAL ASSIGN STATUS RESERVE AREAS BUFFER SIZE BLOCK BLOCKS ORGANIZATION RELATIVE SEQUENTIAL RANDOM DYNAMIC KEY ACCESS MODE
+	   FD GLOBAL EXTERNAL CONTAINS RECORD RECORDS CHARACTERS COMPRESSED LABEL STANDARD OMITTED ARE COPY OF IN ON SUPPRESS REPLACING BY TO RECORDING
+       PROCEDURE_DIVISION_BEGINS
+
+%type < Absyn.Cobol.program > program
+%type < Absyn.Cobol.DataDiv.format > datadiv_format
+
+%start program
+%start datadiv_format
+
+%%
+
+// TODO: the following COBOL constructs are only supported syntactically:
+// FILLER (an ID that can appear more than once)
+// REDEFINES (ignored)
+// SPACES produces only a one-space string
+// COMP is treated ad COMP-3
+
+/*
+ *  whole program entrypoint
+ */
+
+program:
+    iddiv program1 PROCEDURE_DIVISION_BEGINS    { let (env, data) = $2 in new program (locate parseState 1 $1, env, data, locate parseState 3 ()) }
+   
+program1:
+    envdiv datadiv                              { (locate parseState 1 $1, locate parseState 2 $2) }
+
+/* l'env division puo' non esserci??
+  | datadiv                                     { ((), locate parseState $1) }
+*/
+
+iddiv:
+    iddiv_body									{ $1 }
+  | member_name iddiv_body						{ $2 }
+
+member_name:
+	MEMBER NAME ID								{ }
+
+iddiv_body:
+    IDENTIFICATION DIVISION DOT
+    PROGRAM_ID DOT ID DOT						{ $6 }
+
+/*
+ * Environment Division stuff
+ */
+
+envdiv:
+    envdiv_title                                { () }
+  | envdiv_title envdiv_conf                    { () }
+
+envdiv_title:
+    ENVIRONMENT DIVISION DOT					{ }
+
+envdiv_conf:
+	envdiv_conf_title							{ }
+  | envdiv_conf_title envdiv_conf_body			{ }
+
+envdiv_conf_title:
+    CONFIGURATION SECTION DOT					{ }
+
+envdiv_conf_body:
+	envdiv_conf_options							{ }
+
+envdiv_conf_options:
+	envdiv_conf_option							{ }
+  | envdiv_conf_option envdiv_conf_options		{ }
+
+envdiv_conf_option:
+	special_names								{ }
+  | input_output								{ }
+
+special_names:
+	SPECIAL_NAMES DOT special_names_body DOT	{ }
+
+special_names_body:
+	special_name								{ }
+  | special_name special_names_body				{ }
+
+special_name:
+	ID IS ID									{ }
+  | DECIMAL_POINT IS COMMA_KEYWORD				{ }
+
+input_output:
+	input_output_title							{ }
+  | input_output_title input_output_body		{ }
+
+input_output_title:
+	INPUT_OUTPUT SECTION DOT					{ }
+
+input_output_body:
+	file_ctrl									{ }
+
+file_ctrl:
+	file_ctrl_title								{ }
+  | file_ctrl_title file_ctrl_body				{ }
+
+file_ctrl_title:
+	FILE_CONTROL DOT							{ }
+
+file_ctrl_body:
+	file_ctrl_sel file_ctrl_sel_body			{ }
+
+file_ctrl_sel: 
+	SELECT ID									{ }
+  | SELECT OPTIONAL ID							{ }
+   
+file_ctrl_sel_body:
+	ASSIGN TO ID DOT							{ }
+  | ASSIGN TO ID file_ctrl_options DOT			{ }
+  
+file_ctrl_options:
+	file_ctrl_option							{ }
+  | file_ctrl_option file_ctrl_options			{ }
+
+file_ctrl_option:
+	RESERVE UINT64 AREAS							{ }
+  | BUFFER SIZE IS UINT64 BLOCKS					{ }
+  | FILE STATUS IS ID							{ }
+  | organization_mode RELATIVE KEY IS ID		{ }
+  | ACCESS MODE IS mode RECORD KEY IS ID		{ }
+
+organization_mode: 
+	mode										{ }
+  | ORGANIZATION IS mode						{ }
+
+mode:
+	SEQUENTIAL									{ }
+  | RANDOM										{ }
+  | DYNAMIC										{ }
+
+
+/*
+ * Data Division stuff
+ */
+
+datadiv:
+    DATA DIVISION DOT datadiv_body				{ $4 }
+
+datadiv_body:
+	storage_section									{ $1 }
+  | file_section storage_section					{ $2 }
+
+file_section:
+	FILE SECTION DOT								{ }
+  | FILE SECTION DOT files							{ }
+  
+files:
+	file											{ }
+  | file files										{ }
+  
+file:  								
+	FD ID file_options DOT							{ }
+  | FD ID file_options DOT storage_body				{ }
+
+file_options:
+	file_option										{ }
+  | file_option file_options						{ }
+
+file_option:
+	IS GLOBAL										{ }
+  | IS EXTERNAL										{ }
+  | BLOCK CONTAINS n_items fileo_items				{ }
+  | RECORD CONTAINS n_items CHARACTERS				{ }
+  | RECORD CONTAINS n_items COMPRESSED CHARACTERS	{ }
+  | LABEL recs STANDARD								{ }
+  | LABEL recs OMITTED								{ }
+  | DATA recs STANDARD								{ }
+  | DATA recs OMITTED								{ }
+  | RECORDING MODE IS ID							{ }
+
+n_items:
+	UINT64											{ }
+  | UINT64 TO UINT64									{ }
+
+fileo_items:
+	RECORDS											{ }
+  | CHARACTERS										{ }
+
+recs:
+	RECORD IS										{ }
+  | RECORDS ARE										{ }
+
+
+storage_section:
+    WORKING_STORAGE SECTION DOT
+    storage_body                                    { $4 }
+
+storage_body:
+	storage_body_item								{ $1 }
+  | storage_body_item storage_body					{ $1 @ $2 }
+
+storage_body_item:
+    datadiv_line DOT								{ [$1] }
+  | datadiv_line DOT copy_stmt DOT					{ [$1] }
+
+datadiv_line:
+	udatadiv_line									{ locate parseState 1 $1 }
+
+udatadiv_line:
+    datadiv_line_def												{ let (level, id, _) = $1 in DataDiv.Line (level, id, DataDiv.Record, ArraySize.of_int 1) }
+  | datadiv_line_def OCCURS UINT64									{ let (level, id, _) = $1 in DataDiv.Line (level, id, DataDiv.Record, ArraySize.of_uint64 $3) }
+  | datadiv_line_def datadiv_pic_usage								{ let (level, id, _) = $1 in let (p, q) = $2 in DataDiv.Line (level, id, DataDiv.Picture (p, q, None), ArraySize.of_int 1) }
+  | datadiv_line_def datadiv_pic_simple datadiv_occurs_val			{ let (level, id, _) = $1 in let (p, q) = $2 in let (vo, occurs) = $3 in DataDiv.Line (level, id, DataDiv.Picture (p, q, vo), occurs) }
+  | datadiv_line_def datadiv_pic_simple datadiv_occurs_value_usage	{ let (level, id, _) = $1 in let (p, _) = $2 in let ((vo, occurs), q) = $3 in DataDiv.Line (level, id, DataDiv.Picture (p, q, vo), occurs) }
+  | datadiv_line_def datadiv_pic_qualified datadiv_occurs_val		{ let (level, id, _) = $1 in let (p, q) = $2 in let (vo, occurs) = $3 in DataDiv.Line (level, id, DataDiv.Picture (p, q, vo), occurs) }
+
+datadiv_line_def:
+	UINT64 ID											{ (uint16 $1, $2, None) }
+  | UINT64 ID REDEFINES ID							{ (uint16 $1, $2, Some $4) }
+
+datadiv_pic_usage:
+	datadiv_pic_simple							{ $1 }
+  | datadiv_pic_simple datadiv_usage			{ let (p, _) = $1 in (p, Some $2) }
+  | datadiv_pic_qualified						{ $1 }
+
+datadiv_pic_simple:
+    PIC                                         { ($1, None) }
+
+datadiv_pic_qualified:
+  | PIC datadiv_pic_qualifier                   { ($1, Some $2) }
+
+datadiv_pic_qualifier:
+    COMP3                                       { DataDiv.Comp3 }
+  | COMP2                                       { DataDiv.Comp2 }
+  | COMP1                                       { DataDiv.Comp1 }
+  | COMP										{ DataDiv.Comp }
+  | PACKED_DECIMAL								{ DataDiv.PackedDecimal }
+  | BINARY										{ DataDiv.Binary }
+
+datadiv_occurs_value_usage:
+    datadiv_occurs_val datadiv_usage			{ ($1, Some $2) }
+  | datadiv_usage datadiv_occurs_val 			{ ($2, Some $1) }
+
+datadiv_usage:
+	USAGE datadiv_pic_qualifier					{ $2 }
+  |	USAGE IS datadiv_pic_qualifier				{ $3 }
+
+datadiv_occurs_val:
+    OCCURS UINT64                                 { (None, ArraySize.of_uint64 $2) }
+  | VALUE datadiv_value                         { (Some $2, ArraySize.of_int 1) }
+  | OCCURS UINT64 VALUE datadiv_value             { (Some $4, ArraySize.of_uint64 $2) }
+  | VALUE datadiv_value OCCURS UINT64             { (Some $2, ArraySize.of_uint64 $4) }
+
+datadiv_value:
+    datadiv_seq     { DataDiv.Seq $1 } 
+  | datadiv_thrus   { DataDiv.Thru $1 }
+
+datadiv_seq:
+    lit                         { [$1] }
+  | ZEROS						{ [Int 0L] }
+  | SPACES						{ [String " "] }
+  | lit datadiv_seq             { $1 :: $2 }
+  | lit COMMA datadiv_seq       { $1 :: $3 }
+
+datadiv_thru:
+    lit THRU lit                        { ($1, $3) }
+
+datadiv_thrus:
+    datadiv_thru                        { [$1] }
+  | datadiv_thru COMMA datadiv_thrus    { $1 :: $3 }
+
+lit:
+    UINT64			{ Int (Convert.ToInt64 $1) }
+  | INT64			{ Int $1 }
+  | FLOAT			{ Float $1 }
+  | STRING			{ String $1 }
+
+copy_stmt:
+	COPY ID										{ }
+  | copy_target									{ }
+  | copy_target	SUPPRESS						{ }
+  | copy_target	replace							{ }
+  | copy_target	SUPPRESS replace				{ }
+
+replace:
+	REPLACING ID BY ID							{ }
+
+copy_target:
+	COPY ID prep ID prep2 ID					{ }
+  
+prep:
+	OF											{ }
+  | IN											{ }
+
+prep2:
+	prep										{ }
+  | ON											{ }
+
+/*
+ *  picture format parser entrypoint
+ */
+
+datadiv_format:
+    alphafmt EOF                { DataDiv.AlphaFormat $1 }
+  | numfmt EOF                  { let (s, (i, d)) = $1 in DataDiv.NumFormat (s, i, d) }
+
+alphafmt:
+    alphafmt_item               { $1 }
+  | alphafmt_item alphafmt      { $1 @ $2 }
+
+alphafmt_item:
+    alphafmt_char               { [$1] }
+  | alphafmt_char PIC_NUM       { List.init $2 (fun _ -> $1) }
+
+alphafmt_char:
+    PIC_A       { DataDiv.A }
+  | PIC_X       { DataDiv.X }
+
+numfmt:
+    numfmt'                         { (false, $1) }
+  | PIC_S numfmt'                   { (true, $2) }
+
+numfmt':
+    numfmt_part                     { ($1, []) }
+  | numfmt_part PIC_V numfmt_part   { ($1, $3) }
+
+numfmt_part:
+    numfmt_item                            { $1 }
+  | numfmt_item numfmt_part                { $1 @ $2 }
+  | numfmt_item numfmt_sep numfmt_part     { $1 @ $3 }
+
+numfmt_item:
+    numfmt_char                 { [$1] }
+  | numfmt_char PIC_NUM         { List.init $2 (fun _ -> $1) }
+
+numfmt_sep:
+    PIC_DOT     {}
+  | PIC_COMMA   {}
+
+numfmt_char:
+    PIC_9       { DataDiv.Nine }
+  | PIC_Z       { DataDiv.Z }
+  | PIC_0       { DataDiv.Zero }
+
+

@@ -1,0 +1,144 @@
+{
+
+module CobolAnalyzer.Engine.CobolLexer
+
+open System
+open Microsoft.FSharp.Text.Lexing
+open Absyn
+open CobolParser
+open Prelude
+
+let newline (lexbuf : LexBuffer<_>) = lexbuf.EndPos <- lexbuf.EndPos.NextLine
+let lexeme lexbuf = LexBuffer<_>.LexemeString lexbuf
+
+}
+
+let digit = ['0'-'9']
+let whitespace = [' ' '\t']
+let whitespaces = whitespace+
+let newline = ('\000')? ('\r')? '\n'
+let nat = digit+
+let ureal = digit+ '.' digit+
+let pic_char =  ['A' 'X' 'Z' 'S' '(' ')' '0'-'9' 'V']
+let pic_sep = ['.' ',']
+let string_quote = ['\"' '\'']
+let period = '.' whitespaces? newline
+let comp = "COMP" ("UTATIONAL")?
+
+rule datadiv_linecomment = parse
+    | newline       { newline lexbuf; datadiv_token lexbuf }
+    | _             { datadiv_linecomment lexbuf }
+
+and datadiv_format_token = parse
+    | 'A'           { PIC_A }
+    | 'X'           { PIC_X }
+    | '9'           { PIC_9 }
+    | 'Z'           { PIC_Z }
+    | '0'           { PIC_0 }
+    | 'V'           { PIC_V }
+    | '.'           { PIC_DOT }
+    | ','           { PIC_COMMA }
+    | 'S'           { PIC_S }
+    | '(' nat ')'   { let s = lexeme lexbuf in PIC_NUM (Int32.Parse (s.Substring (1, s.Length - 2))) }
+    | eof           { EOF }
+
+and datadiv_pic = parse
+      pic_char+ (pic_sep pic_char+)*    { PIC (lexeme lexbuf) }
+    | whitespaces? period               { newline lexbuf; PERIOD }
+
+and datadiv_token = parse
+	| whitespaces	{ datadiv_token lexbuf }
+	| newline       { newline lexbuf; datadiv_token lexbuf }
+    | newline whitespaces? '*'		{ newline lexbuf; datadiv_linecomment lexbuf }
+	
+    | '.'           { DOT }
+
+
+    | "PIC" ("TURE")? whitespaces  { datadiv_pic lexbuf }
+
+    | "DIVISION"        { DIVISION }
+    | "SECTION"         { SECTION }
+    | "ID" ("ENTIFICATION")?  { IDENTIFICATION }
+    | "PROGRAM-ID"      { PROGRAM_ID }
+    | "ENVIRONMENT"     { ENVIRONMENT }
+    | "CONFIGURATION"   { CONFIGURATION }
+    | "WORKING-STORAGE" { WORKING_STORAGE }
+    | "DATA"            { DATA }
+	| "SPECIAL-NAMES"	{ SPECIAL_NAMES }
+	| "NAMES"			{ NAMES }
+	| "IS"				{ IS }
+	| "ARE"				{ ARE }
+	| "INPUT-OUTPUT"	{ INPUT_OUTPUT }
+	| "FILE"			{ FILE }
+	| "FILE-CONTROL"	{ FILE_CONTROL }
+	| "SELECT"			{ SELECT }
+	| "OPTIONAL"		{ OPTIONAL }
+	| "ASSIGN"			{ ASSIGN }
+	| "STATUS"			{ STATUS }
+	| "RESERVE"			{ RESERVE }
+	| "AREA" ("S")?		{ AREAS }
+	| "BUFFER"			{ BUFFER }
+	| "SIZE"			{ SIZE }
+	| "BLOCK"			{ BLOCK }
+	| "BLOCKS"			{ BLOCKS }
+	| "ORGANIZATION"	{ ORGANIZATION }
+	| "RELATIVE"		{ RELATIVE }
+	| "RANDOM"			{ RANDOM }
+	| "DYNAMIC"			{ DYNAMIC }
+	| "RECORD"			{ RECORD }
+	| "KEY"				{ KEY }
+	| "ACCESS"			{ ACCESS }
+	| "MODE"			{ MODE }
+	| "FD"				{ FD }
+	| "GLOBAL"			{ GLOBAL }
+	| "EXTERNAL"		{ EXTERNAL }
+	| "CONTAINS"		{ CONTAINS }
+	| "RECORDS"			{ RECORDS }
+	| "RECORDING"		{ RECORDING }
+	| "CHARACTERS"		{ CHARACTERS }
+	| "COMPRESSED"		{ COMPRESSED }
+	| "LABEL"			{ LABEL }
+	| "DATA"			{ DATA }
+	| "STANDARD"		{ STANDARD }
+	| "OMITTED"			{ OMITTED }
+	| "COPY"			{ COPY }
+	| "OF"				{ OF }
+	| "IN"				{ IN }
+	| "ON"				{ ON }
+	| "TO"				{ TO }
+	| "SUPPRESS"		{ SUPPRESS }
+	| "REPLACING"		{ REPLACING }
+	| "BY"				{ BY }
+	| "MEMBER"			{ MEMBER }
+	| "NAME"			{ NAME }
+
+	| "ZERO" (("E")? "S")?	{ ZEROS }
+	| "SPACE" ("S")?		{ SPACES }
+
+    | "PROCEDURE" whitespaces "DIVISION" whitespaces? '.' { newline lexbuf; PROCEDURE_DIVISION_BEGINS }
+
+    | "THRU"        { THRU }
+    | "OCCURS"      { OCCURS }
+    | "VALUE"       { VALUE }
+	| "REDEFINES"	{ REDEFINES }
+	| "USAGE"		{ USAGE }
+
+    | comp "-1"				{ COMP1 }
+    | comp "-2"				{ COMP2 }
+    | comp "-3"				{ COMP3 }
+    | comp					{ COMP }
+    | "PACKED-DECIMAL"		{ PACKED_DECIMAL }
+    | "BINARY"				{ BINARY }
+
+
+    | ','           { COMMA }
+
+  	| string_quote [^'"' ''']* string_quote	{ let s = lexeme lexbuf in STRING (s.Substring (1, s.Length - 2)) }
+
+	| nat   							{ UINT64 (UInt64.Parse (lexeme lexbuf)) }
+	| ('-' | '+') nat					{ INT64 (Int64.Parse (lexeme lexbuf)) }
+    | '-'? ureal             			{ FLOAT (parse_float (lexeme lexbuf)) }
+
+    | ['A'-'Z' 'a'-'z']['A'-'Z' 'a'-'z' '0'-'9' '-' '_']*   { ID (lexeme lexbuf) }
+
+	| eof           { EOF }

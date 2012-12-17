@@ -1,0 +1,438 @@
+ 
+%{
+
+#light "on"
+
+open System
+open Absyn
+open Absyn.Cobol.ProcDiv
+open Absyn.Ideal
+open ParseTrans
+
+let parse_error_rich = None
+
+%}
+
+%token <string> STRING
+%token <Absyn.id> ID 
+%token <int64> SINT64
+%token <uint64> UINT64
+%token <float> FLOAT
+
+%token <string> UNKNOWN INVARIANT_KEYWORD KEYWORD
+%token <token> ResyncKeyword
+%token <string> DOT_ACCESS
+
+%token DOT EOF 
+	   STOP_RUN EXIT MOVE ADD SUBTRACT MULTIPLY DIVIDE SET TO FROM INTO BY GIVING GOTO DEPENDING_ON PERFORM END_PERFORM THRU WITH TEST BEFORE AFTER UNTIL TIMES VARYING 
+	   THROUGH COMPUTE EVALUATE WHEN END_EVALUATE IS WHEN_OTHER ZEROS SPACES INPUT OUTPUT NO ADVANCING ERROR PROCEDURE COPY STANDARD OTHER ON END_MOVE
+	   IF THEN ELSE END_IF OF
+	   TRUE FALSE
+	   PLUS MINUS MULT DIV MOD
+	   NOT AND OR
+	   EQ LT GT LEQ GEQ NEQ LESS GREATER THAN EQUAL
+	   COMMA COLON BRA KET
+	   RESYNC
+	   EOL
+	   END_INVARIANT
+
+%left AND OR
+%nonassoc NOT
+%left EQ LT GT LEQ GEQ NEQ
+%left PLUS MINUS 
+%left MULT DIV MOD
+%nonassoc UMINUS
+
+%type <Absyn.Cobol.ProcDiv.line_mode> procdiv_line
+%start procdiv_line
+
+%%
+
+/*
+ *  statement parser entrypoint
+ */
+
+ // TODO:
+ // access with brackets and dots in num_rvalue; also, only one subscript is allowed at this time (eg: no NESTED-ARRAY(5, 2) is supported)
+ // for SQL syntax support, the token DOT_ACCESS has been defined; structured_access treats it like an id
+ // in condition__, the production expr AND/OR expr_right has only to be used with level 88 variables --> to be tested during typechecking
+ // spaces is treated as " "
+ // newlines in logic_binop is causing some 12 shift reduce conflicts
+
+ // State of error recovery: due to fsyacc error production handling, the following unwanted behavior takes place:
+ // when a lone trailing resync-ed keyword appears in an unknown stmt, error productions skip all subsequent current-block statements
+
+
+procdiv_line:
+	newlines EOF						{ EndOfStream }
+  | EOF                                 { EndOfStream }
+  | ID RESYNC DOT						{ ActualLine (Label (locate parseState 1 $1)) }
+  | newlines ID RESYNC DOT				{ ActualLine (Label (locate parseState 2 $2)) }
+  | sentence							{ ActualLine (Statement $1) }
+
+newlines:
+	EOL									{ }
+  | EOL newlines						{ }
+
+sentence:
+	statements DOT  					{ block_of_statements $1 }
+
+statements:
+	statement							{ [$1] }
+  | statement statements				{ $1 :: $2 }
+
+statement:
+	statement'							{ locate parseState 1 $1 }
+
+statement':
+    newlines							{ Nop }
+  | RESYNC								{ Nop }
+  | simple_statement	 				{ $1 }
+  | block_statement						{ $1 }
+  | error_statement						{ let r = statement_parser_token_buffer.consume_as_special_statement (fun o -> match o :?> token with ID s -> Some (s, false) | KEYWORD s -> Some (s, true) | _ -> None) Unknown
+                                          in ParseTrans.statement_parser_token_buffer.clear; r }
+  | newlines error_statement			{ let r = statement_parser_token_buffer.consume_as_special_statement (fun o -> match o :?> token with ID s -> Some (s, false) | KEYWORD s -> Some (s, true) | _ -> None) Unknown
+                                          in ParseTrans.statement_parser_token_buffer.clear; r }
+
+error_statement:
+  | error_id anything_mode RESYNC		{ }
+  | error_id anything_mode EOL			{ }
+  | error RESYNC						{ keyword_token_mode <- false }
+  | error EOL							{ keyword_token_mode <- false }
+
+
+error_id:
+	error_id__							{ $1 }
+
+error_id__:
+	ID									{ keyword_token_mode <- true; $1 }
+
+anything_mode:
+	anything							{ keyword_token_mode <- false; $1 }
+
+anything:
+	any									{ $1 }
+  | any anything						{ $1 @ $2 }
+  
+any:
+	ID									{ [$1] }
+  | KEYWORD								{ [$1] }
+  | structured_access					{ [] }
+  | lit									{ [] }
+  | bool_binop							{ [] }
+  | arith_binop							{ [] }
+  | logic_binop							{ [] }
+  | BRA									{ [] }
+  | COLON								{ [] }
+
+dotless_statements:
+	statements							{ $1 }
+
+separator:
+	EOL									{  }
+  | RESYNC								{  }
+  | EOL RESYNC							{  }
+
+simple_statement:
+	if_stmt								{ $1 }
+  |	if_stmt END_IF   					{ $1 }
+  | goto_stmt							{ $1 }
+  | perform_call_stmt					{ $1 }
+  | compute_stmt						{ $1 }
+  | set_stmt							{ $1 }
+  | invariant_stmt						{ let r = statement_parser_token_buffer.consume_as_special_statement (fun o -> match o :?> token with ID s -> Some (s, false) | KEYWORD s -> Some (s, true) | _ -> None) (fun (s, _, _) -> Invariant (s, $1))
+                                          in ParseTrans.statement_parser_token_buffer.clear; r }
+  |	STOP_RUN							{ Return }
+  | EXIT								{ Return }
+
+block_statement:
+    arith_stmt							{ $1 }
+  |	move_stmt							{ $1 }
+  | perform_times_stmt					{ $1 }
+  | perform_until_stmt					{ $1 }
+  | perform_until_varying_after_stmt	{ $1 }
+  | evaluate_stmt						{ $1 }
+
+
+/* invariant statements */
+invariant_stmt:
+   invariant_kwd anything_mode_inv_lines RESYNC			{ clear_buffer_at_eol <- true; $1 }
+ | invariant_kwd anything_mode_inv_lines END_INVARIANT	{ clear_buffer_at_eol <- true; $1 }
+
+invariant_kwd:
+	INVARIANT_KEYWORD					{ keyword_token_mode <- true; clear_buffer_at_eol <- false; $1 }
+
+anything_mode_inv_lines:
+	anything_inv_lines					{ keyword_token_mode <- false; $1 }
+
+anything_inv_lines:
+	anything_inv								{ $1 }
+  | anything_inv newlines						{ $1 }
+  | anything_inv newlines anything_inv_lines	{ $1 @ $3 }
+
+anything_inv:
+	any									{ $1 }
+  | any anything_inv					{ $1 @ $2 }
+//  | ID RESYNC DOT ID					    { [$4] }
+//  | ID RESYNC DOT ID anything_inv  		{ [$4] @ $5 }
+
+
+
+/* block statements */
+
+arith_stmt:
+	ADD rvalue TO arith_stmt_lvalue											{ arith_stmt_trans parseState $2 (ArithBinOp Plus)  $4 }
+  |	SUBTRACT rvalue FROM arith_stmt_lvalue									{ arith_stmt_trans parseState $2 (ArithBinOp Minus) $4 }
+  | MULTIPLY rvalue BY arith_stmt_lvalue									{ arith_stmt_trans parseState $2 (ArithBinOp Mult)  $4 }
+  | DIVIDE rvalue INTO arith_stmt_lvalue									{ arith_stmt_trans parseState $2 (ArithBinOp Div)   $4 }
+  | DIVIDE rvalue BY rvalue GIVING targets 									{ List.map (fun lv -> ($2, lv)) $6 |> arith_stmt_trans parseState $4 (ArithBinOp Div) }
+
+arith_stmt_lvalue:
+	targets																	{ List.map (fun lv -> (LValue lv, lv)) $1 }
+  | rvalue GIVING targets													{ List.map (fun lv -> ($1, lv)) $3 }
+
+move_stmt:
+	MOVE rvalue TO targets													{ move_stmt_trans parseState $2 $4 }
+  | MOVE rvalue EOL TO targets												{ move_stmt_trans parseState $2 $5 }
+
+perform_until_stmt:
+  	PERFORM perform_target_newlines UNTIL condition							{ perform_until_to_loop parseState (Some $2, None) $4 false }
+  | PERFORM UNTIL condition dotless_statements END_PERFORM					{ perform_until_to_loop parseState (None, Some $4) $3 false }
+  |	PERFORM perform_target_newlines WITH TEST BEFORE UNTIL condition		{ perform_until_to_loop parseState (Some $2, None) $7 false }
+  | PERFORM perform_target_newlines WITH TEST AFTER  UNTIL condition		{ perform_until_to_loop parseState (Some $2, None) $7 true  }
+  | PERFORM WITH TEST BEFORE UNTIL condition dotless_statements END_PERFORM	{ perform_until_to_loop parseState (None, Some $7) $6 false }
+  | PERFORM WITH TEST AFTER  UNTIL condition dotless_statements END_PERFORM	{ perform_until_to_loop parseState (None, Some $7) $6 true  }
+
+perform_call_stmt:
+	PERFORM perform_target													{ Perform $2 }
+  | PERFORM perform_target_newlines											{ Perform $2 }
+
+perform_times_stmt:
+	PERFORM perform_target_newlines UINT64 TIMES							{ perform_times_to_loop parseState (Some $2, None) (Lit (Int (Convert.ToInt64 $3))) }
+  | PERFORM perform_target_newlines ID   TIMES								{ perform_times_to_loop parseState (Some $2, None) (LValue (Id $3)) }
+  | PERFORM UINT64 TIMES dotless_statements END_PERFORM						{ perform_times_to_loop parseState (None, Some $4) (Lit (Int (Convert.ToInt64 $2))) }
+  | PERFORM ID   TIMES dotless_statements END_PERFORM						{ perform_times_to_loop parseState (None, Some $4) (LValue (Id $2)) }
+
+perform_until_varying_after_stmt:
+	PERFORM perform_target_newlines perform_varying_loop							{ perform_until_varying_after_to_loop parseState (Some $2, None) $3 false }
+  |	PERFORM perform_varying_loop dotless_statements END_PERFORM						{ perform_until_varying_after_to_loop parseState (None, Some $3) $2 false }
+  |	PERFORM perform_target_newlines WITH TEST BEFORE perform_varying_loop			{ perform_until_varying_after_to_loop parseState (Some $2, None) $6 false }
+  |	PERFORM perform_target_newlines WITH TEST AFTER  perform_varying_loop			{ perform_until_varying_after_to_loop parseState (Some $2, None) $6 true  }
+  |	PERFORM WITH TEST BEFORE perform_varying_loop dotless_statements END_PERFORM	{ perform_until_varying_after_to_loop parseState (None, Some $6) $5 false }
+  |	PERFORM WITH TEST AFTER  perform_varying_loop dotless_statements END_PERFORM	{ perform_until_varying_after_to_loop parseState (None, Some $6) $5 true  }
+
+perform_varying_loop:
+	VARYING varying_body								{ [$2] }
+  |	VARYING varying_body after_varying					{ $2 :: $3 }
+
+after_varying:
+	AFTER varying_body									{ [$2] }
+  | AFTER varying_body after_varying					{ $2 :: $3 }
+
+varying_body:
+	ID FROM ID BY ID UNTIL condition 					{ ($1, LValue (Id $3), LValue (Id $5), $7) }
+  | ID FROM ID BY UINT64 UNTIL condition					{ ($1, LValue (Id $3), Lit (Int (Convert.ToInt64 $5)), $7) }
+  | ID FROM UINT64 BY ID UNTIL condition					{ ($1, Lit (Int (Convert.ToInt64 $3)), LValue (Id $5), $7) }
+  | ID FROM UINT64 BY UINT64 UNTIL condition				{ ($1, Lit (Int (Convert.ToInt64 $3)), Lit (Int (Convert.ToInt64 $5)), $7) }    
+
+perform_target:
+	ID													{ ($1, None) }
+  | ID THRU ID											{ ($1, Some $3) }
+
+perform_target_newlines:
+    ID newlines											{ ($1, None) }
+  | ID THRU ID newlines									{ ($1, Some $3) }
+
+evaluate_stmt:
+	EVALUATE eval_subject eval_body							{ evaluate_to_if parseState $2 $3 }
+  | EVALUATE eval_subject eval_body END_EVALUATE			{ evaluate_to_if parseState $2 $3 }
+  | EVALUATE eval_subject separator eval_body				{ evaluate_to_if parseState $2 $4 }
+  | EVALUATE eval_subject separator eval_body END_EVALUATE	{ evaluate_to_if parseState $2 $4 }
+
+eval_subject:
+	general_expr										{ $1 }
+  | condition											{ $1 }
+
+eval_body:	
+    whens		                                        { ($1, []) }
+  | whens WHEN_OTHER dotless_statements					{ ($1, $3) }
+  | whens separator WHEN_OTHER dotless_statements		{ ($1, $4) }
+
+whens:
+    when_body											{ [$1] }
+  | when_body whens										{ $1 :: $2 }
+
+when_body:
+    WHEN general_expr dotless_statements				{ ($2, $3) }
+
+general_expr:
+	expr												{ $1 }
+  | TRUE												{ Lit True }
+  | FALSE												{ Lit False }
+
+
+/* simple statements */
+
+if_stmt:
+	IF condition dotless_statements									{ If ($2, block_of_statements $3, None) }
+  |	IF condition THEN dotless_statements							{ If ($2, block_of_statements $4, None) }
+  | IF condition dotless_statements ELSE dotless_statements			{ If ($2, block_of_statements $3, Some (block_of_statements $5)) }
+  | IF condition THEN dotless_statements ELSE dotless_statements	{ If ($2, block_of_statements $4, Some (block_of_statements $6)) }
+
+set_stmt:
+	SET ID TO rvalue									{ Assign (Id $2, $4) }
+
+goto_stmt:
+	GOTO ID												{ Goto $2 }
+  | GOTO identifiers DEPENDING_ON ID					{ goto_depending_to_if parseState ($2, 1L) $4 }
+
+targets:
+	target												{ [$1] }
+  | target COMMA targets								{ $1 :: $3 }
+  | target targets										{ $1 :: $2 }
+
+target:
+	lvalue												{ $1 }
+
+lvalue:
+	ID													{ Id $1 }
+  | structured_access									{ $1 }
+
+identifiers:
+	ID													{ [$1] }
+  | ID COMMA identifiers								{ $1 :: $3 }
+  | ID identifiers										{ $1 :: $2 }
+  
+compute_stmt:
+	COMPUTE ID EQ arith_expr							{ Assign (Id $2, $4) }
+
+expr:
+	expr__												{ $1 }
+  | expr__ newlines										{ $1 }
+
+expr__:
+	arith_expr											{ $1 }
+  | string_expr											{ $1 }
+
+arith_expr:
+	num_rvalue											{ $1 }
+  | arith_expr PLUS arith_expr							{ BinOp ($1, ArithBinOp Plus, $3) }
+  | arith_expr MINUS arith_expr							{ BinOp ($1, ArithBinOp Minus, $3) }
+  | arith_expr MULT arith_expr							{ BinOp ($1, ArithBinOp Mult, $3) }
+  | arith_expr DIV arith_expr							{ BinOp ($1, ArithBinOp Div, $3) }
+  | arith_expr MOD arith_expr							{ BinOp ($1, ArithBinOp Mod, $3) }
+  | MINUS arith_expr %prec UMINUS						{ UnOp (ArithUnOp Neg, $2) }
+  | BRA arith_expr KET									{ $2 }
+  	
+string_expr:
+    STRING												{ Lit (String $1) }
+  | BRA string_expr KET									{ $2 }
+
+condition:
+	condition__											{ $1 }
+  | newlines condition									{ $2 }
+
+condition__:
+	expr AND cond_expr_right							{ unfold_condition $1 (LogicBinOp And) $3 }
+  |	expr OR cond_expr_right								{ unfold_condition $1 (LogicBinOp Or) $3 }
+  |	expr bool_binop cond_expr_right						{ unfold_condition $1 $2 $3 }
+  | BRA condition KET									{ $2 }
+  | NOT condition										{ UnOp (LogicUnOp Not, $2) }
+  | condition AND condition								{ BinOp ($1, LogicBinOp And, $3) }
+  | condition OR condition								{ BinOp ($1, LogicBinOp Or, $3) }
+
+cond_expr_right:
+	cond_expr_right_item								{ [($1, None)] }
+  | cond_expr_right_item AND cond_expr_right			{ ($1, Some (LogicBinOp And)) :: $3 }
+  | cond_expr_right_item OR cond_expr_right				{ ($1, Some (LogicBinOp Or)) :: $3 }
+
+cond_expr_right_item:
+	expr												{ $1 }
+  | SPACES												{ Lit(String " ") }
+  | ZEROS												{ Lit (Int (0L)) }
+  | SPACES newlines										{ Lit(String " ") }
+  | ZEROS newlines										{ Lit (Int (0L)) }
+
+logic_binop:
+	AND													{ LogicBinOp And }
+  | OR													{ LogicBinOp Or }
+
+arith_binop:
+	PLUS												{ ArithBinOp Plus }
+  | MINUS												{ ArithBinOp Minus }
+  | MULT												{ ArithBinOp Mult }
+  | DIV													{ ArithBinOp Div }
+  | MOD													{ ArithBinOp Mod }
+
+bool_binop:
+	bool_binop_symbol									{ RelBinOp $1 }
+  | bool_binop_keywords									{ RelBinOp $1 }
+
+bool_binop_symbol:
+	EQ													{ Eq }
+  | LT													{ Lt }
+  | GT 													{ Gt }
+  | LEQ 												{ Leq }
+  | GEQ													{ Geq }
+  | NEQ													{ Neq }
+  | NOT EQ												{ Neq }
+
+bool_binop_keywords:
+	EQUAL												{ Eq }
+  | EQUAL TO											{ Eq }
+  | IS EQUAL											{ Eq }
+  | IS EQUAL TO											{ Eq }
+  | LESS THAN											{ Lt }
+  | IS LESS THAN										{ Lt }
+  | LESS THAN OR EQUAL									{ Leq }
+  | LESS THAN OR EQUAL TO								{ Leq }
+  | IS LESS THAN OR EQUAL								{ Leq }
+  | IS LESS THAN OR EQUAL TO							{ Leq }
+  | GREATER THAN										{ Gt }
+  | IS GREATER THAN										{ Gt }
+  | GREATER THAN OR EQUAL								{ Geq }
+  | GREATER THAN OR EQUAL TO							{ Geq }
+  | IS GREATER THAN OR EQUAL							{ Geq }
+  | IS GREATER THAN OR EQUAL TO							{ Geq }
+	
+
+num_rvalue:
+	ID													{ LValue (Id $1) }
+  | num_lit												{ Lit $1 }
+  | structured_access									{ LValue $1 }
+
+rvalue:
+	ID													{ LValue (Id $1) }
+  | lit													{ Lit $1 }
+  | ZEROS												{ Lit (Int 0L) }
+  | SPACES												{ Lit (String " ") }
+  | structured_access									{ LValue $1 }
+  
+structured_access:
+    /*ID DOT ID											{ Id $1 }*/
+  | ID BRA array_location KET							{ Subscript (Id $1, $3) }	
+  | ID BRA range_location KET							{ Id $1 }	
+  | ID OF structured_access								{ Select ($3, $1) }
+  | DOT_ACCESS											{ Id $1 }  
+//  | ID RESYNC DOT ID									{ Id $1 }
+
+lit:
+	num_lit												{ $1 }
+  | TRUE												{ Int 1L }
+  | FALSE												{ Int 0L }
+  | STRING												{ String $1 }
+
+num_lit:
+	UINT64												{ Int (Convert.ToInt64 $1) }
+  | SINT64												{ Int $1 }
+  | FLOAT												{ Float $1 }
+
+array_location:
+	ID													{ LValue (Id $1) }
+  | UINT64												{ Lit (Int (Convert.ToInt64 $1)) }
+
+range_location:
+	UINT64 COLON UINT64									{  }
+  | UINT64 COLON ID										{  }
+  | ID COLON UINT64										{  }
+  | ID COLON ID											{  }

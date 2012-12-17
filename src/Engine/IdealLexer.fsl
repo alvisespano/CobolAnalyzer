@@ -1,0 +1,101 @@
+{
+
+module CobolAnalyzer.Engine.IdealLexer
+
+open System
+open Microsoft.FSharp.Text.Lexing
+open Absyn
+open IdealParser
+open Prelude
+
+let newline (lexbuf : LexBuffer<_>) = lexbuf.EndPos <- lexbuf.EndPos.NextLine
+
+}
+
+let digit = ['0'-'9']
+let whitespace = [' ' '\t' ]
+let newline = ('\n' | '\r' '\n')
+let nat = digit+
+let ureal = digit+ '.' digit+
+
+rule comment = parse
+	| "*/"			{ token lexbuf }
+	| newline		{ newline lexbuf; comment lexbuf }
+	| _				{ comment lexbuf }
+
+and linecomment = parse
+    | newline       { newline lexbuf; token lexbuf }
+    | _             { linecomment lexbuf }
+
+and token = parse
+	| whitespace	{ token lexbuf }
+	| newline       { newline lexbuf; token lexbuf }
+	| "/*"			{ comment lexbuf }
+    | "//"          { linecomment lexbuf }
+
+	| "if"			{ IF }
+	| "then"        { THEN }
+	| "else"		{ ELSE }
+	| "proc"		{ PROC }
+	| "true"		{ TRUE }
+	| "false"		{ FALSE }
+	| "ref"			{ REF }
+	| "val"			{ VAL }
+	| "where"		{ WHERE }
+	| "goto"		{ GOTO }
+	| "return"		{ RETURN }
+    | "perform"     { PERFORM }
+
+	| "alpha"		{ ALPHA }
+	| "alphanum"	{ ALPHANUM }
+	| "num"			{ NUM }
+	| "array"		{ ARRAY }
+    
+	| "bcd"	        { NUMBCD }
+	| "1xb"	        { NUMONEPERBYTE }
+	| "int16"		{ NUMINT16 }
+	| "int32"		{ NUMINT32 }
+	| "int64"		{ NUMINT64 }
+	| "float32"		{ NUMFLOAT32 }
+	| "float64"		{ NUMFLOAT64 }
+
+	| ":="			{ ASSIGN }
+	| "+"			{ PLUS }
+	| "-"			{ MINUS }
+	| "*"			{ MULT }
+	| "/"			{ DIV }
+	| "%"			{ MOD }
+	| "="			{ EQ }
+	| "<>"			{ NEQ }
+	| "and"			{ AND }
+	| "or"			{ OR }
+	| "not"			{ NOT }
+	| "<"			{ LT }
+	| ">"			{ GT }
+	| "<="			{ LEQ }
+	| ">="			{ GEQ }
+
+	| '('			{ BRA }
+	| ')'			{ KET }
+	| '['			{ SQBRA }
+	| ']'			{ SQKET }
+	| '{'			{ CURBRA }
+	| '}'			{ CURKET }
+	| ";"			{ SEMICOLON }
+	| ":"			{ COLON }
+	| ","			{ COMMA }
+	| "."			{ DOT }
+
+	| "\"" [^'"']* "\""	{ let s = LexBuffer<_>.LexemeString lexbuf in STRING (s.Substring (1, s.Length - 2)) }
+
+	| nat   							{ UINT64 (UInt64.Parse (LexBuffer<_>.LexemeString lexbuf)) }
+	| '-' nat   						{ INT64 (Int64.Parse (LexBuffer<_>.LexemeString lexbuf)) }
+    | ureal   			                { UFLOAT (parse_float (LexBuffer<_>.LexemeString lexbuf)) }
+    | '-' ureal             			{ FLOAT (parse_float (LexBuffer<_>.LexemeString lexbuf)) }
+
+	| 'S'			            { SIGNED }
+    | 'S' nat                   { let s = LexBuffer<_>.LexemeString lexbuf in SIGNEDFMT (FormatSize.parse (s.Substring (1, s.Length - 1))) }
+
+	| ['A'-'Z' 'a'-'z' '_']['a'-'z' 'A'-'Z' '0'-'9' '_' '-']*	{ ID (LexBuffer<_>.LexemeString lexbuf) }
+
+	| eof			{ EOF }

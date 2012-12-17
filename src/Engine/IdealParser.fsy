@@ -1,0 +1,220 @@
+ 
+%{
+
+#light "on"
+
+open System
+open Absyn
+open Absyn.Ideal
+open ParseTrans
+open Prelude
+
+let parse_error_rich = Some (fun ctx -> raise (ParseErrorContext ctx))
+
+let numformat_of_ufloat x =
+    let s = sprintf "%g" x
+    in
+        match s.Split [|'.'|] with
+            [|n; d|] -> (FormatSize.parse n, FormatSize.parse d)
+          | a        -> unexpected "float '%g' split to tokens [|%s|]" x (flatten_strings "; " a)
+
+%}
+
+%token <string> STRING
+%token <Absyn.id> ID 
+%token <int64> INT64
+%token <uint64> UINT64
+%token <float> FLOAT UFLOAT
+%token <Absyn.FormatSize.t> SIGNEDFMT
+%token 	BRA KET SQBRA SQKET CURBRA CURKET SIGNED
+    	ALPHA ALPHANUM NUM ARRAY
+		NUMBCD NUMONEPERBYTE NUMINT16 NUMINT32 NUMINT64 NUMFLOAT32 NUMFLOAT64
+		COLON SEMICOLON COMMA ASSIGN DOT
+		PLUS MINUS MULT DIV MOD
+		NOT AND OR
+		EQ LT GT LEQ GEQ NEQ
+		IF THEN ELSE PROC TRUE FALSE REF VAL WHERE GOTO RETURN PERFORM
+		EOF
+
+%right THEN
+%right ELSE
+%left AND OR
+%nonassoc NOT
+%left EQ LT GT LEQ GEQ NEQ
+%left PLUS MINUS 
+%left MULT DIV MOD
+%nonassoc UMINUS
+
+%start program
+
+%type < Absyn.Ideal.program > program
+
+%%
+
+sep:
+    COMMA                       {}
+  | SEMICOLON                   {}
+
+
+program:
+	body EOF			        { { procs = []; main = $1 } }
+  |	procs body EOF		        { { procs = $1; main = $2 } }
+	
+lit:
+	UINT64						{ Int (Convert.ToInt64 $1) }
+  |	INT64						{ Int $1 }
+  | FLOAT            			{ Float $1 }
+  | UFLOAT            			{ Float $1 }
+  | TRUE						{ True }
+  |	FALSE						{ False }
+  | STRING						{ String $1 }
+  
+id:
+	ID							{ $1 }
+  | SIGNED						{ "S" }
+  | SIGNEDFMT                   { sprintf "S%d" $1 }
+
+expr:
+    expr PLUS expr				{ BinOp ($1, ArithBinOp Plus, $3) }
+  | expr MINUS expr				{ BinOp ($1, ArithBinOp Minus, $3) }
+  | expr MULT expr				{ BinOp ($1, ArithBinOp Mult, $3) }
+  | expr DIV expr				{ BinOp ($1, ArithBinOp Div, $3) }
+  | expr MOD expr				{ BinOp ($1, ArithBinOp Mod, $3) }
+
+  | expr EQ expr				{ BinOp ($1, RelBinOp Eq, $3) }
+  | expr NEQ expr				{ BinOp ($1, RelBinOp Neq, $3) }
+  | expr LT expr				{ BinOp ($1, RelBinOp Lt, $3) }
+  | expr GT expr				{ BinOp ($1, RelBinOp Gt, $3) }
+  | expr LEQ expr				{ BinOp ($1, RelBinOp Leq, $3) }
+  | expr GEQ expr				{ BinOp ($1, RelBinOp Geq, $3) }
+
+  | expr AND expr				{ BinOp ($1, LogicBinOp And, $3) }
+  | expr OR expr				{ BinOp ($1, LogicBinOp Or, $3) }
+  | NOT expr					{ UnOp (LogicUnOp Not, $2) }
+
+  | MINUS expr %prec UMINUS		{ UnOp (ArithUnOp Neg, $2) }
+
+  | lit							{ Lit $1 }
+  | lvalue						{ LValue $1 }
+  | BRA expr KET				{ $2 }
+
+lvalue:
+	id							{ Id $1 }
+  | lvalue SQBRA expr SQKET		{ Subscript ($1, $3) }
+  | lvalue DOT id				{ Select ($1, $3) }
+
+actual:
+	expr						{ ByVal $1 }
+  | VAL expr					{ ByVal $2 }
+  | REF lvalue					{ ByRef $2 }
+
+actuals:
+	actual						{ [$1] }
+  |	actual sep					{ [$1] }
+  | actual sep actuals		    { $1 :: $3 }
+  | actual actuals			    { $1 :: $2 }
+  
+paragraph_id:
+    ID                          { ($1, None) }
+  | ID ID		                { ($1, Some $2) }
+
+statement:
+	statement'					{ locate parseState 1 $1 }
+
+statement':
+	lvalue ASSIGN expr				            { Assign ($1, $3) }
+  | IF expr THEN statement		                { If ($2, $4, None) }
+  | IF expr THEN statement ELSE statement 	    { If ($2, $4, Some $6) }
+  | id BRA KET						            { Call ($1, []) }
+  | id BRA actuals KET				            { Call ($1, $3) }
+  | GOTO id                                     { Goto $2 }
+  | RETURN                                      { Return }
+  | block                                       { Block $1 }
+  | PERFORM paragraph_id                        { Perform $2 }
+
+statements:
+  |	statement SEMICOLON					{ [$1] }
+  | statement SEMICOLON statements		{ $1 :: $3 }
+
+block:
+    ID COLON CURBRA statements CURKET           { (Some $1, $4) }
+  | CURBRA statements CURKET                    { (None, $2) }
+	               	
+body:
+	statement						{ ($1, []) }
+  | statement WHERE env_bindings	{ ($1, $3) }
+	
+proc:
+	PROC id BRA KET body			    { { name = $2; args = []; body = $5 } }
+  |	PROC id BRA proc_args KET body		{ { name = $2; args = $4; body = $6 } }
+
+procs:
+	proc			{ [$1] }
+  |	proc procs		{ $1 :: $2 }
+	
+ty_bindings:
+	env_binding						{ [$1] }
+  |	env_binding sep					{ [$1] }
+  | env_binding sep env_bindings	{ $1 :: $3 }
+  | env_binding env_bindings		{ $1 :: $2 }
+
+ty_binding:
+    id COLON pic                     { ($1, $3, None) }
+  | id COLON pic ASSIGN const_value  { ($1, $3, Some $5) }
+
+const_value:
+    lit                             { Seq [$1] }
+  | SQBRA const_value_seq SQKET     { Seq $2 }
+
+const_value_seq:
+    lit                             { [$1] }
+  | lit sep                         { [$1] }
+  | lit sep const_value_seq         { $1 :: $3 }
+
+env_binding:
+    ty_binding                      { $1 }
+
+env_bindings:
+    ty_bindings                     { $1 }
+
+proc_args:
+	ty_bindings		                { $1 }
+
+pic:
+	num	SQBRA num_fmt SQKET				{ let (s, n, d) = $3 in let q = $1 in Ty.Num (s, n, d, q) }
+  | ALPHA size_fmt						{ Ty.Alpha $2 }
+  | ALPHANUM size_fmt					{ Ty.AlphaNum $2 }
+  | CURBRA ty_bindings CURKET			{ Ty.Record $2 }
+  | pic ARRAY array_fmt 				{ Ty.Array ($1, $3) }
+
+num:
+    NUM                                 { Ty.OnePerByte }
+  | NUM DOT num_qual					{ $3 }
+  | num_qual							{ $1 }
+
+num_qual:
+	NUMBCD                              { Ty.BCD }
+  | NUMONEPERBYTE						{ Ty.OnePerByte }
+  | NUMINT16							{ Ty.Int 16us }
+  | NUMINT32							{ Ty.Int 3us }
+  | NUMINT64							{ Ty.Int 64us }
+  | NUMFLOAT32							{ Ty.Float 32us }
+  | NUMFLOAT64							{ Ty.Float 64us }
+
+num_fmt:
+    plain_num_fmt                       { let (n, d) = $1 in (false, n, d) }
+  |	SIGNED plain_num_fmt                { let (n, d) = $2 in (true, n, d) }
+  |	SIGNEDFMT 				            { (true, $1, FormatSize.of_int 0) }
+  |	SIGNEDFMT DOT UINT64 				{ (true, $1, FormatSize.of_uint64 $3) }
+
+plain_num_fmt:
+	UINT64								{ (FormatSize.of_uint64 $1, FormatSize.of_int 0) }
+  | UINT64 DOT UINT64 					{ (FormatSize.of_uint64 $1, FormatSize.of_uint64 $3) }
+  | DOT UINT64 							{ (FormatSize.of_int 0, FormatSize.of_uint64 $2) }
+  | UFLOAT                              { numformat_of_ufloat $1 } 
+
+size_fmt:
+	SQBRA UINT64 SQKET					{ FormatSize.of_uint64 $2 }
+
+array_fmt:
+	SQBRA UINT64 SQKET					{ ArraySize.of_uint64 $2 }
