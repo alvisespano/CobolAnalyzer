@@ -7,3 +7,17 @@ For information on Lintent please contact:
 
 COBOL Analyzer is a prototype of a parsing and typing system for COBOL.
 It is still under active development is currently in alpha stage.
+We may target a few updates in the future, when we plan to fix some minor
+bugs.
+A prototype of a UI is also present in the repository but that project
+is no longer maintained.
+
+
+Currently supported features
+	- island-parsing-like LALR parser
+	- flow-type checking on variable reuse
+	
+Unsupported features or known bugs
+	- abstract interpretation via polynomial domains
+	- support of SQL constructs of COBOL85
+
