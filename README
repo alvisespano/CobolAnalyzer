@@ -1,0 +1,9 @@
+COBOL Analyzer
+(C) 2009-2011 Alvise Spano'
+	Universita' Ca' Foscari di Venezia
+	
+For information on Lintent please contact:
+	spano at dais dot unive dot it.
+
+COBOL Analyzer is a prototype of a parsing and typing system for COBOL.
+It is still under active development is currently in alpha stage.
