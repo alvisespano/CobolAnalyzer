@@ -548,7 +548,7 @@ module Ideal =
         and 'a tree = Node of 'a tree_node
                     | Leaf of 'a
 
-        type t = Num of Numeric.polynome<N> tree
+(*        type t = Num of Numeric.polynome<N> tree
                | Alpha of string tree
                | Bool of Boolean.polynome<N> tree
      
@@ -556,7 +556,7 @@ module Ideal =
         let pretty = function
             Num n   -> Numeric.pretty n
           | Alpha a -> Alphabetic.pretty a
-          | Bool b  -> Boolean.pretty b
+          | Bool b  -> Boolean.pretty b*)
 
 
 

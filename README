@@ -9,8 +9,11 @@ COBOL Analyzer is a prototype of a parsing and typing system for COBOL.
 It is still under active development is currently in alpha stage.
 We may target a few updates in the future, when we plan to fix some minor
 bugs.
+
 A prototype of a UI is also present in the repository but that project
-is no longer maintained.
+is no longer maintained: nonetheless it is capable of loading and showing
+COBOL programs, while on the background a console window shows the output
+of the analyzer as detailed log.
 
 
 Currently supported features

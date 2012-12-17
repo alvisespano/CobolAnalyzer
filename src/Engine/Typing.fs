@@ -284,13 +284,11 @@ let (|Single|Choice|) (fi : choice_type) =
 type flow_type =
     { current  : choice_type
       original : Ty.t
-      domain   : Dom.t
     }
 with          
-    static member init t dom =
+    static member init t =
         { original = t;
           current  = new choice_type (t);
-          domain   = dom;
         }
                       
     member self.coerce (fi : choice_type) =
@@ -305,7 +303,7 @@ with
         match self.current with
             Single t when t = self.original -> self.current.pretty
           | _                               -> let dir = if self.current.is_subtype_of self.original then "<:" else ":>"
-                                               sprintf "%s %s %s @ %s" self.current.pretty dir (Ty.pretty self.original) (Dom.pretty self.domain)
+                                               sprintf "%s %s %s" self.current.pretty dir (Ty.pretty self.original)
    
         
 
@@ -411,7 +409,7 @@ module Env =
 module VarEnv =    
     type t = flow_type Env.t
 
-    let bind_single x (ty, dom) env = Env.bind x (flow_type.init ty dom) env
+    let bind_single x ty env = Env.bind x (flow_type.init ty) env
     let bind_singles bs env = List.fold (fun env (x, t, _) -> bind_single x t env) env bs   
     let bind_args = bind_singles
 
@@ -519,7 +517,7 @@ and typecheck_env_binding ((x, ty, vo) as b) =
     match vo with
         None -> ()
       | Some v ->
-            let (tv, dom) = typecheck_const_value v
+            let tv = typecheck_const_value v
             in
                 if not (TyCmp.is_bindable ty tv) then Report.mismatch (Ty.pretty ty) (Ty.pretty_temp tv) (sprintf "binding of symbol '%s'" x);
     b
@@ -530,11 +528,11 @@ and typecheck_const_value = function
   | Seq [lit] -> typecheck_lit lit
 
   | Seq lits ->
-        let tys = List.map (fun lit -> typecheck_lit lit |> fst) lits
+        let tys = List.map (typecheck_lit) lits
         let ty1 = List.head tys
         in
             List.iteri (fun i ty -> if ty <> ty1 then Report.etherogeneous_seq ty ty1 (List.nth lits i)) tys;
-            (Ty.Seq (ty1, ArraySize.of_int lits.Length), not_implemented "typecheck_const_value seq")
+            Ty.Seq (ty1, ArraySize.of_int lits.Length)
 
      
 
@@ -627,8 +625,8 @@ and typecheck_statement' stoplb stmt =
 
 
   | Assign (lv, e) -> 
-        let! (te, dome) = typecheck_expr e
-        let! (tlv, domlv, coerce) = typecheck_lvalue lv
+        let! te = typecheck_expr e
+        let! (tlv, coerce) = typecheck_lvalue lv
         do! coerce (new choice_type (TyCmp.promote_temporary tlv te))
                   
                       
@@ -651,7 +649,7 @@ and typecheck_statement' stoplb stmt =
         
         
   | If (e, st1, st2o) -> 
-        let! (te, _) = typecheck_expr e
+        let! te = typecheck_expr e
         in
             match te with
                 Ty.Bool -> 
@@ -684,11 +682,11 @@ and typecheck_statement' stoplb stmt =
                 in
                     match ac with
                         ByVal e ->
-                            let! (te, _) = typecheck_expr e
+                            let! te = typecheck_expr e
                             check (TyCmp.promote_temporary targ te)
 
                       | ByRef lv ->
-                            let! (tactual, domactual, coerce) = typecheck_lvalue lv
+                            let! (tactual, coerce) = typecheck_lvalue lv
                             let ftarg = Env.lookup arg signature.argenv
                             check tactual;
                             do! coerce ftarg.current
@@ -701,8 +699,8 @@ and typecheck_expr (e : expr) =
   st {
    match e with
     BinOp (e1, op, e2) ->
-        let! (te1, dom1) = typecheck_expr e1
-        let! (te2, dom2) = typecheck_expr e2
+        let! te1 = typecheck_expr e1
+        let! te2 = typecheck_expr e2
         let t' =
             match (op, te1, te2) with
                 (* unsigned minus *)
@@ -728,18 +726,10 @@ and typecheck_expr (e : expr) =
               | (ArithBinOp _, _, _)  -> Report.binop_mismatch Ty.AnyNumber Ty.AnyNumber te1 te2 op
               | (RelBinOp _, _, _)    -> Report.binop_mismatch Ty.AnyNumber Ty.AnyNumber te1 te2 op
               | (LogicBinOp _, _, _)  -> Report.binop_mismatch Ty.Bool Ty.Bool te1 te2 op
-
-        let dom' =
-            match (op, dom1, dom2) with
-              | (ArithBinOp op, Dom.Num n1, Dom.Num n2)   -> Dom.Num (Dom.Numeric.reduce_arith (Dom.Numeric.BinOp (n1, op, n2)))
-              | (LogicBinOp op, Dom.Bool b1, Dom.Bool b2) -> Dom.Bool (Dom.Boolean.reduce_logic (Dom.Boolean.BinOp (b1, op, b2)))
-              | (RelBinOp op, Dom.Num n1, Dom.Num n2)     -> Dom.Bool (Dom.Boolean.reduce_rel n1 n2 op)
-              | _                                         -> unexpected "abstract domains in binary application: %s %s %s" (Dom.pretty dom1) (pretty_binop op) (Dom.pretty dom2)
-
-        return (t', dom')
+        return t'
             
   | UnOp (op, e) ->
-        let! (te, dom) = typecheck_expr e
+        let! te = typecheck_expr e
         let t' =
             match (op, te) with
                 (ArithUnOp Neg, Ty.Numeric (_, n, d)) -> Ty.TNum (true, n, d)
@@ -748,46 +738,41 @@ and typecheck_expr (e : expr) =
               (* mismatches *)
               | (ArithUnOp Neg, _) -> Report.unop_mismatch Ty.AnyNumber te op
               | (LogicUnOp Not, _) -> Report.unop_mismatch Ty.Bool te op
-        let dom' =
-            match (op, dom) with
-              | (ArithUnOp op, Dom.Num n)  -> Dom.Num (Dom.Numeric.reduce_arith (Dom.Numeric.UnOp (op, n)))
-              | (LogicUnOp op, Dom.Bool b) -> Dom.Bool (Dom.Boolean.reduce_logic (Dom.Boolean.UnOp (op, b)))
-              | _                          -> unexpected "abstract domains in unary application: %s %s" (pretty_unop op) (Dom.pretty dom)
-        return (t', dom')
+        return t'
             
 
   | Lit lit -> return typecheck_lit lit
 
   | LValue lv ->
-        let! (tlv, dom, _) = typecheck_lvalue lv
-        return (Ty.Type tlv, dom)
+        let! (tlv, _) = typecheck_lvalue lv
+        return Ty.Type tlv
   
   }
 
 
 and typecheck_lit = function
-    Int n -> (Ty.TNum (n < 0L, FormatSize.of_int (sprintf "%d" (Math.Abs n)).Length, 0us), Dom.Num (Dom.Numeric.lit (float n)))
+    Int n -> Ty.TNum (n < 0L, FormatSize.of_int (sprintf "%d" (Math.Abs n)).Length, 0us)
 
   | Float x ->
         let a = Math.Abs x
         let s = sprintf "%g" a
         let nlen = (sprintf "%g" (Math.Truncate a)).Length
         in
-            (Ty.TNum (x < 0.0, FormatSize.of_int nlen, FormatSize.of_int (s.Length - nlen - 1)), Dom.Num (Dom.Numeric.lit x))
+            Ty.TNum (x < 0.0, FormatSize.of_int nlen, FormatSize.of_int (s.Length - nlen - 1))
 
-  | True  -> (Ty.Bool, Dom.Bool (Dom.Boolean.Const true))
-  | False -> (Ty.Bool, Dom.Bool (Dom.Boolean.Const true))
+  | True  -> Ty.Bool
+  | False -> Ty.Bool
 
   | String s ->
         let rex = new Regex "[0-9]"
         in
-            (Ty.Type ((if rex.Match(s).Success then Ty.AlphaNum else Ty.Alpha) (FormatSize.of_int s.Length)), Dom.Alpha s)
+            Ty.Type ((if rex.Match(s).Success then Ty.AlphaNum else Ty.Alpha) (FormatSize.of_int s.Length))
 
 
 
 and attempt_typecheck_lvalue choosety lv =
   st {
-    let! (t, dom, x, uid, ft, tsubst) =
+    let! (t, x, uid, ft, tsubst) =
         let rec f lv =
           st {
            match lv with
@@ -795,21 +780,19 @@ and attempt_typecheck_lvalue choosety lv =
                 let x = ann.value
                 let! venv = get_var_env
                 let ft = Env.lookup x venv
-                let (t, dom) = choosety x ft
+                let t = choosety x ft
                 let uid = ann.unique
                 do! lift_topo_env (Env.bind uid ft)
-                return (t, dom, x, uid, ft, fun t' -> t')
+                return (t, x, uid, ft, fun t' -> t')
 
           | Subscript (lv', e) ->
-                let! (tlv, dom, x,  uid, ft, tsubst) = f lv'
-                (* TODO: support for array domains *)
-                let! (te, dome) = typecheck_expr e
-                (* TODO: do some static check with subscript domain 'dome' *)
+                let! (tlv, x,  uid, ft, tsubst) = f lv'
+                let! te = typecheck_expr e
                 return
                     match (tlv, te) with
-                        (Ty.Array (ta, n), Ty.Numeric _) ->
+                      | (Ty.Array (ta, n), Ty.Numeric _) ->
                             eval_const_expr e |> Option.iter (fun i -> if i < 1L || i > Convert.ToInt64 n then Report.out_of_bounds tlv i);
-                            (ta, not_implemented "array domain", x, uid, ft, fun t' -> tsubst (Ty.Array (t', n)))
+                            (ta, x, uid, ft, fun t' -> tsubst (Ty.Array (t', n)))
                       (* mismatches *)
                       | (Ty.Array (ta, _), _) -> Report.temporary_mismatch Ty.AnyNumber te "array subscript"
                       | _                     -> Report.array_mismatch tlv
@@ -818,14 +801,13 @@ and attempt_typecheck_lvalue choosety lv =
                 return Report.filler_in_select lv
 
           | Select (lv', lb) ->
-                let! (tlv, dom, x, uid, ft, tsubst) = f lv'
-                (* TODO: support for record domains *)
+                let! (tlv, x, uid, ft, tsubst) = f lv'
                 return
                     match tlv with
                         Ty.Record bs as r ->
                             match List.tryFind (fun (lb', _, _) -> lb = lb') bs with
                                 None             -> Report.undefined_record_label lb r
-                              | Some (_, tlb, _) -> (tlb, not_implemented "record domain", x, uid, ft, fun t' -> tsubst (Ty.Record (List.map (function (lb', t, _) when lb' = lb -> (lb, t', None) | rp -> rp) bs)))
+                              | Some (_, tlb, _) -> (tlb, x, uid, ft, fun t' -> tsubst (Ty.Record (List.map (function (lb', t, _) when lb' = lb -> (lb, t', None) | rp -> rp) bs)))
                         (* mismatches *)
                         | tlv -> Report.record_expected tlv lb
           }
@@ -833,18 +815,18 @@ and attempt_typecheck_lvalue choosety lv =
             f lv
     let coerce (fi : choice_type) =
       st {
-        let ft' = ft.coerce (fi.map tsubst) uid        
+        let ft' = ft.coerce (fi.map tsubst) //uid        
         do! lift_var_env (Env.bind x ft')
         do! lift_topo_env (Env.bind uid ft')
       }
-    return (t, dom, coerce)
+    return (t, coerce)
   }
 
 and typecheck_lvalue_as_original lv =
   st {
     let choosety x (ft : flow_type) =
         msg Low "lvalue '%s': attempt with original type for %s : %s" (pretty_lvalue pretty_annots_annotated lv) x (ft.pretty);
-        (ft.original, ft.domain)
+        ft.original
     return! attempt_typecheck_lvalue choosety lv
   }
 
@@ -853,7 +835,7 @@ and typecheck_lvalue_as_current lv =
     let choosety x (ft : flow_type) =
         let p s = msg Low "lvalue '%s': %s %s : %s" (pretty_lvalue pretty_annots_annotated lv) s x (ft.pretty)
         match ft.current with
-            Single t       -> p "attempt with current flow type as single for"; (t, ft.domain)
+            Single t       -> p "attempt with current flow type as single for"; t
           | Choice _ as fi -> p "current is a choice in"; Report.ambiguous_choice x fi.pretty
     return! attempt_typecheck_lvalue choosety lv
   }
