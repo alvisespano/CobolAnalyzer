@@ -1,4 +1,6 @@
 COBOL Analyzer
+A static code analyzer for COBOL.
+
 (C) 2009-2011 Alvise Spano'
 	Universita' Ca' Foscari di Venezia
 	
